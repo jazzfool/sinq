@@ -324,18 +324,18 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
 /// Genericized updater which follows the master event order.
 ///
 /// Invoker should be a function which invokes the `update_n` function.
-/// The named signature of this is `Fn(item, aux, current_record, length) -> (new_record, count)`.
+/// The named signature of this is `Fn(item, aux, current_record, length) -> new_records`.
 ///
 /// A general implementation may look like this;
 /// ```ignore
-/// fn invoker(obj: &mut Object, aux: &mut Aux, node: NodeId, current_record: usize, length: usize) -> u32 {
+/// fn invoker(obj: &mut Object, aux: &mut Aux, node: NodeId, current_record: usize, length: usize) -> Vec<EventRecord> {
 ///     obj.node.reset_count();
 ///     obj.node.set_record(Some(current_record));
 ///     let mut graph = obj.graph.take();
 ///     graph.update_node(obj, aux, node, length);
 ///     obj.node.reset(graph);
 ///     obj.node.set_record(None);
-///     (aux.master.record(), obj.node.count())
+///     aux.master.record()
 /// }
 /// ```
 ///
@@ -344,7 +344,7 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
 /// - Correctly `take` and `reset` inner `VerbGraph` of graph in order to call `update_n`.
 /// - Invoke `update_n` on graph, using `length`.
 /// - Reset `current_record` after `update_n`.
-/// - Return new record;
+/// - Return new records.
 ///
 /// Indexer should be a function which returns all the graphs that a given `T` is listening to.
 /// The implementation should invariably lead to an invocation to `QueuedGraph::subjects`.
