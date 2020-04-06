@@ -6,6 +6,7 @@ use {
     std::{borrow::Cow, cell::RefCell, collections::HashMap, rc::Rc},
 };
 
+/// Handles a queue, routing events into closures based on their key.
 pub struct QueueHandler<T, A: 'static, E: graph::Event> {
     handlers: HashMap<&'static str, Rc<RefCell<dyn FnMut(&mut T, &mut A, E)>>>,
     listener: event::RcEventListener<E>,
@@ -13,7 +14,7 @@ pub struct QueueHandler<T, A: 'static, E: graph::Event> {
 }
 
 impl<T, A, E: graph::Event> QueueHandler<T, A, E> {
-    /// Creates a new queue handler, listening to a given event queue.
+    /// Creates a new queue handler, listening to a given node event queue.
     pub fn new<To, Ao>(node: &EventNode<To, Ao, E>) -> Self {
         QueueHandler {
             handlers: HashMap::new(),
@@ -74,6 +75,7 @@ impl<T, A, E: graph::Event> graph::DynQueueHandler<T, A> for QueueHandler<T, A, 
     }
 }
 
+/// Stores a list of queue handlers tied to nodes.
 pub struct QueuedGraph<T: 'static, A: 'static> {
     handlers: HashMap<NodeId, Box<dyn graph::DynQueueHandler<T, A>>>,
 }
@@ -95,6 +97,8 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
     }
 
     /// Adds a queue handler.
+    ///
+    /// If the handler handles a node that has already been handled, the old handler will be replaced.
     pub fn add<'a, E: graph::Event + 'static>(
         &'a mut self,
         handler: QueueHandler<T, A, E>,
@@ -112,21 +116,6 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
         self
     }
 
-    fn update_handler(
-        handler: &mut dyn graph::DynQueueHandler<T, A>,
-        obj: &mut T,
-        additional: &mut A,
-    ) {
-        handler.update(obj, additional);
-    }
-
-    /// Invokes all the queue handlers in a linear fashion, however non-linear jumping between verb graphs is still supported.
-    pub fn update_all(&mut self, obj: &mut T, additional: &mut A) {
-        for handler in self.handlers.values_mut() {
-            QueuedGraph::update_handler(handler.as_mut(), obj, additional)
-        }
-    }
-
     /// Invokes the queue handlers for a specific node.
     #[inline]
     pub fn update_node(&mut self, obj: &mut T, additional: &mut A, node: NodeId, length: usize) {
@@ -135,6 +124,7 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
         }
     }
 
+    /// Returns a list of all the nodes that this graph is listening to.
     #[inline]
     pub fn subjects(&self) -> Vec<NodeId> {
         self.handlers.keys().cloned().collect()
@@ -143,11 +133,14 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
 
 pub type NodeId = u64;
 
+/// Blind record of an event from a specific node.
 #[derive(Debug, Clone)]
 pub struct EventRecord {
     pub origin: NodeId,
 }
 
+/// Tracks event order of a singe multi-queue system.
+/// You should realistically only have one instance for each thread.
 #[derive(Default)]
 pub struct MasterNodeRecord {
     emissions: Vec<EventRecord>,
@@ -155,6 +148,7 @@ pub struct MasterNodeRecord {
 }
 
 impl MasterNodeRecord {
+    /// Creates a new `MasterNodeRecord`.
     #[inline]
     pub fn new() -> Self {
         Default::default()
@@ -180,6 +174,8 @@ impl MasterNodeRecord {
     }
 }
 
+/// An object containing a `QueuedGraph` and contains an `RcEventQueue`, meaning it handles both in-going and out-going events.
+/// Each instance is implicitly tied to a `MasterNodeRecord`.
 pub struct EventNode<T: 'static, A: 'static, E: graph::Event + 'static> {
     graph: Option<QueuedGraph<T, A>>,
     queue: event::RcEventQueue<E>,
@@ -204,6 +200,7 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> std::ops::DerefMut for E
 }
 
 impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
+    /// Creates a new `EventNode`.
     pub fn new(master_rec: &mut MasterNodeRecord) -> Self {
         EventNode {
             graph: Some(QueuedGraph::new()),
@@ -213,6 +210,7 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
         }
     }
 
+    /// The unique ID of this node.
     #[inline]
     pub fn id(&self) -> NodeId {
         self.id
@@ -237,6 +235,7 @@ impl<T: 'static, A: 'static, E: graph::Event + Clone + 'static> QueueInterfaceLi
 }
 
 impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
+    /// Notifies the master event record and forwards event to the inner queue.
     pub fn emit<'a>(
         &mut self,
         event: Cow<'a, E>,
@@ -254,6 +253,8 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
         self.queue.emit(event)
     }
 
+    /// Helper function for `emit`.
+    /// Takes an owned event and emits it as a `Cow::Owned`.
     #[inline]
     pub fn emit_owned<'a>(
         &mut self,
@@ -263,6 +264,8 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
         self.emit(Cow::Owned(event), mnr)
     }
 
+    /// Helper function for `emit`.
+    /// Takes a borrowed event and emits it as a `Cow::Borrowed`.
     #[inline]
     pub fn emit_borrowed<'a>(
         &mut self,
@@ -272,16 +275,24 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
         self.emit(Cow::Borrowed(event), mnr)
     }
 
+    /// Removes the inner graph and returns it.
+    /// This is necessary for handling ownership when updating.
+    ///
+    /// **Always** call `reset` when finished.
     #[inline]
     pub fn take(&mut self) -> QueuedGraph<T, A> {
         self.graph.take().unwrap()
     }
 
+    /// Resets the `graph` that was `taken`.
+    ///
+    /// Invoke responsibly; only reset what was returned from `take`.
     #[inline]
     pub fn reset(&mut self, graph: QueuedGraph<T, A>) {
         self.graph = Some(graph);
     }
 
+    /// Sets the current event record index, if any.
     #[inline]
     pub fn set_record(&mut self, record: Option<usize>) {
         self.current_record = record;
@@ -307,12 +318,10 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
 /// ```
 ///
 /// Critical things that `invoker` must do;
-/// - Reset emission count;
 /// - Update `current_record` of graph.
 /// - Correctly `take` and `reset` inner `VerbGraph` of graph in order to call `update_n`.
 /// - Invoke `update_n` on graph, using `length`.
 /// - Reset `current_record` after `update_n`.
-/// - Return emission count.
 /// - Return new record;
 ///
 /// Indexer should be a function which returns all the graphs that a given `T` is listening to.
