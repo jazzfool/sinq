@@ -134,14 +134,14 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
 pub type NodeId = u64;
 
 /// Blind record of an event from a specific node.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventRecord {
     pub origin: NodeId,
 }
 
 /// Tracks event order of a singe multi-queue system.
 /// You should realistically only have one instance for each thread.
-#[derive(Default)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MasterNodeRecord {
     emissions: Vec<EventRecord>,
     next_id: NodeId,
@@ -329,7 +329,6 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
 /// A general implementation may look like this;
 /// ```ignore
 /// fn invoker(obj: &mut Object, aux: &mut Aux, node: NodeId, current_record: usize, length: usize) -> Vec<EventRecord> {
-///     obj.node.reset_count();
 ///     obj.node.set_record(Some(current_record));
 ///     let mut graph = obj.graph.take();
 ///     graph.update_node(obj, aux, node, length);
