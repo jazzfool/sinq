@@ -351,8 +351,8 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
 ///
 /// A general implementation may look like this;
 /// ```ignore
-/// fn indexer(obj: &Object) -> (Vec<GraphId>, usize) {
-///     (obj.node.subjects(), obj.node.final_record())
+/// fn indexer(obj: &Object) -> Vec<GraphId> {
+///     obj.node.subjects()
 /// }
 /// ```
 ///
