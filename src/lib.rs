@@ -181,6 +181,7 @@ pub struct EventNode<T: 'static, A: 'static, E: graph::Event + 'static> {
     queue: event::RcEventQueue<E>,
     id: NodeId,
     current_record: Option<usize>,
+    final_record: usize,
 }
 
 impl<T: 'static, A: 'static, E: graph::Event + 'static> std::ops::Deref for EventNode<T, A, E> {
@@ -207,6 +208,7 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
             queue: Default::default(),
             id: master_rec.next_id(),
             current_record: None,
+            final_record: 0,
         }
     }
 
@@ -293,9 +295,29 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
     }
 
     /// Sets the current event record index, if any.
+    ///
+    /// The current event record keeps track of the current event
+    /// being processed, so that if an event is emitted within a handler,
+    /// the emitted event can be inserted into the master record after
+    /// the handled event.
     #[inline]
     pub fn set_record(&mut self, record: Option<usize>) {
         self.current_record = record;
+    }
+
+    /// Returns the latest final record.
+    #[inline]
+    pub fn set_final_record(&mut self, final_rec: usize) {
+        self.final_record = final_rec;
+    }
+
+    /// Returns the latest final record.
+    ///
+    /// The final record keeps track of the final index reached after `update` is finished.
+    /// This is so that event records aren't reprocessed
+    #[inline]
+    pub fn final_record(&self) -> usize {
+        self.final_record
     }
 }
 
@@ -329,36 +351,61 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
 ///
 /// A general implementation may look like this;
 /// ```ignore
-/// fn indexer(obj: &mut Object) -> Vec<GraphId> {
-///     obj.node.subjects() // through Deref<Target = QueuedGraph>
+/// fn indexer(obj: &Object) -> (Vec<GraphId>, usize) {
+///     (obj.node.subjects(), obj.node.final_record())
 /// }
 /// ```
+///
+/// Recorder should return the final record.
+///
+/// Finalizer should update the final record.
 pub fn update<T, A: 'static>(
     items: &mut [T],
     aux: &mut A,
     mut rec: Vec<EventRecord>,
     invoker: impl Fn(&mut T, &mut A, NodeId, usize, usize) -> Vec<EventRecord>,
     indexer: impl Fn(&T) -> Vec<NodeId>,
+    recorder: impl Fn(&T) -> usize,
+    finalizer: impl Fn(&mut T, usize),
 ) {
+    if items.is_empty() {
+        return;
+    }
+
+    let mut highest_common_rec = std::usize::MAX;
     let mut index: HashMap<NodeId, Vec<usize>> = HashMap::new();
     for (i, item) in items.iter().enumerate() {
-        let graphs = indexer(item);
+        let (graphs, final_rec) = (indexer(item), recorder(item));
+        highest_common_rec = highest_common_rec.min(final_rec);
         for graph in graphs {
             index.entry(graph).or_default().push(i);
         }
     }
 
-    let mut i = 0;
+    if highest_common_rec == rec.len() {
+        return;
+    }
+
+    let mut i = highest_common_rec;
     let mut emit_count = rec.len();
     while i < emit_count {
         if let Some(indices) = index.get(&rec[i].origin) {
             for idx in indices {
+                if i < recorder(&items[*idx]) {
+                    // this item has already processed this event.
+                    // reprocessing it would be a bug
+                    continue;
+                }
                 let new_rec = invoker(&mut items[*idx], aux, rec[i].origin, i, 1);
                 rec = new_rec;
                 emit_count = rec.len();
             }
         }
         i += 1;
+    }
+
+    for item in items {
+        finalizer(item, emit_count);
     }
 }
 
@@ -375,6 +422,8 @@ mod tests {
             current_rec: usize,
             length: usize,
         ) -> Vec<EventRecord>;
+        fn node_final(&self) -> usize;
+        fn node_set_final(&mut self, fr: usize);
     }
 
     struct Object<E: graph::Event + 'static>(
@@ -407,6 +456,14 @@ mod tests {
             self.0.reset(graph);
             self.0.set_record(None);
             master.record()
+        }
+
+        fn node_final(&self) -> usize {
+            self.0.final_record()
+        }
+
+        fn node_set_final(&mut self, fr: usize) {
+            self.0.set_final_record(fr);
         }
     }
 
@@ -482,6 +539,8 @@ mod tests {
                 obj.update(aux, node, current_rec, length)
             },
             |obj| obj.node_subjects(),
+            |obj| obj.node_final(),
+            |obj, fr| obj.node_set_final(fr),
         );
 
         assert_eq!(&obj_1.1, &["obj_3", "obj_2", "obj_2", "obj_3", "obj_2"]);
