@@ -6,9 +6,14 @@ use {
     std::{borrow::Cow, collections::HashMap},
 };
 
+pub trait Handler<T, A, E>: FnMut(&mut T, &mut A, E) + 'static {}
+impl<X, T, A, E> Handler<T, A, E> for X where X: FnMut(&mut T, &mut A, E) + 'static {}
+
+type HandlerMap<T, A, E> = HashMap<&'static str, Box<dyn Handler<T, A, E>>>;
+
 /// Handles a queue, routing events into closures based on their key.
 pub struct QueueHandler<T, A: 'static, E: graph::Event> {
-    handlers: HashMap<&'static str, Box<dyn Fn(&mut T, &mut A, E)>>,
+    handlers: HandlerMap<T, A, E>,
     listener: event::RcEventListener<E>,
     node_id: NodeId,
 }
@@ -26,64 +31,59 @@ impl<T, A, E: graph::Event> QueueHandler<T, A, E> {
     /// Adds a closure to be executed when an event of a specific key is matched.
     ///
     /// Also see [`event_key`](struct.Event.html#structmethod.get_key).
-    pub fn on<'a>(
-        &'a mut self,
-        ev: &'static str,
-        handler: impl Fn(&mut T, &mut A, E) + 'static,
-    ) -> &'a mut Self {
+    pub fn on<'a>(&'a mut self, ev: &'static str, handler: impl Handler<T, A, E>) -> &'a mut Self {
         self.handlers.insert(ev, Box::new(handler));
         self
     }
 
     /// Same as [`on`](QueueHandler::on), however `self` is consumed and returned.
     #[inline]
-    pub fn and_on(
-        mut self,
-        ev: &'static str,
-        handler: impl Fn(&mut T, &mut A, E) + 'static,
-    ) -> Self {
+    pub fn and_on(mut self, ev: &'static str, handler: impl Handler<T, A, E>) -> Self {
         self.on(ev, handler);
         self
+    }
+
+    fn handle_events(
+        handlers: &mut HandlerMap<T, A, E>,
+        events: &[E],
+        obj: &mut T,
+        additional: &mut A,
+    ) {
+        for event in events {
+            if let Some(handler) = handlers.get_mut(event.get_key()) {
+                (*handler)(obj, additional, event.clone());
+            }
+        }
     }
 }
 
 impl<T, A, E: graph::Event> graph::DynQueueHandler<T, A> for QueueHandler<T, A, E> {
     fn update(&mut self, obj: &mut T, additional: &mut A) {
         let handlers = &mut self.handlers;
-        self.listener.with(|events| {
-            for event in events {
-                if let Some(handler) = handlers.get_mut(event.get_key()) {
-                    (*handler)(obj, additional, event.clone());
-                }
-            }
-        });
+        self.listener
+            .with(move |events| Self::handle_events(handlers, events, obj, additional));
     }
 
     fn update_n(&mut self, n: usize, obj: &mut T, additional: &mut A) {
         let handlers = &mut self.handlers;
-        self.listener.with_n(n, |events| {
-            for event in events {
-                if let Some(handler) = handlers.get_mut(event.get_key()) {
-                    (*handler)(obj, additional, event.clone());
-                }
-            }
+        self.listener.with_n(n, move |events| {
+            Self::handle_events(handlers, events, obj, additional)
         });
     }
 }
 
 /// A handler convertible to `Any`.
-pub trait AnyHandler<T, A>: graph::DynQueueHandler<T, A> {
+pub trait AnyHandler<T, A>: graph::DynQueueHandler<T, A> + std::any::Any {
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
-impl<T: 'static, A: 'static, E: graph::Event + 'static> AnyHandler<T, A> for QueueHandler<T, A, E> {
-    #[inline]
+impl<X: graph::DynQueueHandler<T, A> + std::any::Any, T, A> AnyHandler<T, A> for X {
+    #[inline(always)]
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
-
-    #[inline]
+    #[inline(always)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
