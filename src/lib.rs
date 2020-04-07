@@ -3,12 +3,12 @@ pub extern crate reclutch;
 
 use {
     reclutch::{event, prelude::*, verbgraph as graph},
-    std::{borrow::Cow, cell::RefCell, collections::HashMap, rc::Rc},
+    std::{borrow::Cow, collections::HashMap},
 };
 
 /// Handles a queue, routing events into closures based on their key.
 pub struct QueueHandler<T, A: 'static, E: graph::Event> {
-    handlers: HashMap<&'static str, Rc<RefCell<dyn FnMut(&mut T, &mut A, E)>>>,
+    handlers: HashMap<&'static str, Box<dyn Fn(&mut T, &mut A, E)>>,
     listener: event::RcEventListener<E>,
     node_id: NodeId,
 }
@@ -29,9 +29,9 @@ impl<T, A, E: graph::Event> QueueHandler<T, A, E> {
     pub fn on<'a>(
         &'a mut self,
         ev: &'static str,
-        handler: impl FnMut(&mut T, &mut A, E) + 'static,
+        handler: impl Fn(&mut T, &mut A, E) + 'static,
     ) -> &'a mut Self {
-        self.handlers.insert(ev, Rc::new(RefCell::new(handler)));
+        self.handlers.insert(ev, Box::new(handler));
         self
     }
 
@@ -40,7 +40,7 @@ impl<T, A, E: graph::Event> QueueHandler<T, A, E> {
     pub fn and_on(
         mut self,
         ev: &'static str,
-        handler: impl FnMut(&mut T, &mut A, E) + 'static,
+        handler: impl Fn(&mut T, &mut A, E) + 'static,
     ) -> Self {
         self.on(ev, handler);
         self
@@ -53,9 +53,7 @@ impl<T, A, E: graph::Event> graph::DynQueueHandler<T, A> for QueueHandler<T, A, 
         self.listener.with(|events| {
             for event in events {
                 if let Some(handler) = handlers.get_mut(event.get_key()) {
-                    use std::ops::DerefMut;
-                    let mut handler = handler.as_ref().borrow_mut();
-                    (handler.deref_mut())(obj, additional, event.clone());
+                    (*handler)(obj, additional, event.clone());
                 }
             }
         });
@@ -66,9 +64,7 @@ impl<T, A, E: graph::Event> graph::DynQueueHandler<T, A> for QueueHandler<T, A, 
         self.listener.with_n(n, |events| {
             for event in events {
                 if let Some(handler) = handlers.get_mut(event.get_key()) {
-                    use std::ops::DerefMut;
-                    let mut handler = handler.as_ref().borrow_mut();
-                    (handler.deref_mut())(obj, additional, event.clone());
+                    (*handler)(obj, additional, event.clone());
                 }
             }
         });
