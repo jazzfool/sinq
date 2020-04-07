@@ -152,8 +152,8 @@ impl MasterNodeRecord {
 
     /// Returns a copy of the current event record.
     #[inline]
-    pub fn record(&self) -> Vec<EventRecord> {
-        self.emissions.clone()
+    pub fn record(&self) -> &[EventRecord] {
+        &self.emissions
     }
 
     fn next_id(&mut self) -> NodeId {
@@ -450,7 +450,7 @@ mod tests {
             graph.update_node(self, master, node, length);
             self.0.reset(graph);
             self.0.set_record(None);
-            master.record()
+            master.record().to_vec()
         }
 
         fn node_final(&self) -> usize {
@@ -524,7 +524,7 @@ mod tests {
         // obj_3 should be checked before obj_2.
         // if implemented correctly, none of this will matter, it'll sort it correctly.
         let objs: &mut [&mut dyn ObjectNode] = &mut [&mut obj_1, &mut obj_2, &mut obj_3];
-        let record = master.record();
+        let record = master.record().to_vec();
 
         update(
             objs,
