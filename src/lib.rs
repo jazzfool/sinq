@@ -71,9 +71,27 @@ impl<T, A, E: graph::Event> graph::DynQueueHandler<T, A> for QueueHandler<T, A, 
     }
 }
 
+/// A handler convertible to `Any`.
+pub trait AnyHandler<T, A>: graph::DynQueueHandler<T, A> {
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+}
+
+impl<T: 'static, A: 'static, E: graph::Event + 'static> AnyHandler<T, A> for QueueHandler<T, A, E> {
+    #[inline]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    #[inline]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
 /// Stores a list of queue handlers tied to nodes.
 pub struct QueuedGraph<T: 'static, A: 'static> {
-    handlers: HashMap<NodeId, Box<dyn graph::DynQueueHandler<T, A>>>,
+    handlers: HashMap<NodeId, Box<dyn AnyHandler<T, A>>>,
 }
 
 impl<T: 'static, A: 'static> Default for QueuedGraph<T, A> {
@@ -112,16 +130,13 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
 
     /// Returns an immutable reference to a queue handler for a specified node.
     #[inline]
-    pub fn get_handler(&self, node: NodeId) -> Option<&dyn graph::DynQueueHandler<T, A>> {
+    pub fn get_handler(&self, node: NodeId) -> Option<&dyn AnyHandler<T, A>> {
         Some(self.handlers.get(&node)?.as_ref())
     }
 
     /// Returns an mutable reference to a queue handler for a specified node.
     #[inline]
-    pub fn get_handler_mut(
-        &mut self,
-        node: NodeId,
-    ) -> Option<&mut dyn graph::DynQueueHandler<T, A>> {
+    pub fn get_handler_mut(&mut self, node: NodeId) -> Option<&mut dyn AnyHandler<T, A>> {
         Some(self.handlers.get_mut(&node)?.as_mut())
     }
 
