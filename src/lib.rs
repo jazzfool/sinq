@@ -99,9 +99,7 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
         &'a mut self,
         handler: QueueHandler<T, A, E>,
     ) -> &'a mut Self {
-        self.handlers
-            .entry(handler.node_id)
-            .or_insert(Box::new(handler));
+        self.handlers.insert(handler.node_id, Box::new(handler));
         self
     }
 
@@ -110,6 +108,21 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
     pub fn and_add<E: graph::Event + 'static>(mut self, handler: QueueHandler<T, A, E>) -> Self {
         self.add(handler);
         self
+    }
+
+    /// Returns an immutable reference to a queue handler for a specified node.
+    #[inline]
+    pub fn get_handler(&self, node: NodeId) -> Option<&dyn graph::DynQueueHandler<T, A>> {
+        Some(self.handlers.get(&node)?.as_ref())
+    }
+
+    /// Returns an mutable reference to a queue handler for a specified node.
+    #[inline]
+    pub fn get_handler_mut(
+        &mut self,
+        node: NodeId,
+    ) -> Option<&mut dyn graph::DynQueueHandler<T, A>> {
+        Some(self.handlers.get_mut(&node)?.as_mut())
     }
 
     /// Invokes the queue handlers for a specific node.
