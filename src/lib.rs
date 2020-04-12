@@ -334,7 +334,7 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
         self.current_record = record;
     }
 
-    /// Returns the latest final record.
+    /// Sets the latest final record.
     #[inline]
     pub fn set_final_record(&mut self, final_rec: usize) {
         self.final_record = final_rec;
