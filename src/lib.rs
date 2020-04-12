@@ -28,14 +28,22 @@ impl<T, A, E: graph::Event> QueueHandler<T, A, E> {
     /// Adds a closure to be executed when an event of a specific key is matched.
     ///
     /// Also see [`event_key`](struct.Event.html#structmethod.get_key).
-    pub fn on<'a>(&'a mut self, ev: &'static str, handler: impl FnMut(&mut T, &mut A, E) + 'static) -> &'a mut Self {
+    pub fn on<'a>(
+        &'a mut self,
+        ev: &'static str,
+        handler: impl FnMut(&mut T, &mut A, E) + 'static,
+    ) -> &'a mut Self {
         self.handlers.insert(ev, Box::new(handler));
         self
     }
 
     /// Same as [`on`](QueueHandler::on), however `self` is consumed and returned.
     #[inline]
-    pub fn and_on(mut self, ev: &'static str, handler: impl FnMut(&mut T, &mut A, E) + 'static) -> Self {
+    pub fn and_on(
+        mut self,
+        ev: &'static str,
+        handler: impl FnMut(&mut T, &mut A, E) + 'static,
+    ) -> Self {
         self.on(ev, handler);
         self
     }
