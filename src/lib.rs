@@ -6,10 +6,7 @@ use {
     std::{borrow::Cow, collections::HashMap},
 };
 
-pub trait Handler<T, A, E>: FnMut(&mut T, &mut A, E) + 'static {}
-impl<X, T, A, E> Handler<T, A, E> for X where X: FnMut(&mut T, &mut A, E) + 'static {}
-
-type HandlerMap<T, A, E> = HashMap<&'static str, Box<dyn Handler<T, A, E>>>;
+type HandlerMap<T, A, E> = HashMap<&'static str, Box<dyn FnMut(&mut T, &mut A, E) + 'static>>;
 
 /// Handles a queue, routing events into closures based on their key.
 pub struct QueueHandler<T, A: 'static, E: graph::Event> {
@@ -31,14 +28,14 @@ impl<T, A, E: graph::Event> QueueHandler<T, A, E> {
     /// Adds a closure to be executed when an event of a specific key is matched.
     ///
     /// Also see [`event_key`](struct.Event.html#structmethod.get_key).
-    pub fn on<'a>(&'a mut self, ev: &'static str, handler: impl Handler<T, A, E>) -> &'a mut Self {
+    pub fn on<'a>(&'a mut self, ev: &'static str, handler: impl FnMut(&mut T, &mut A, E) + 'static) -> &'a mut Self {
         self.handlers.insert(ev, Box::new(handler));
         self
     }
 
     /// Same as [`on`](QueueHandler::on), however `self` is consumed and returned.
     #[inline]
-    pub fn and_on(mut self, ev: &'static str, handler: impl Handler<T, A, E>) -> Self {
+    pub fn and_on(mut self, ev: &'static str, handler: impl FnMut(&mut T, &mut A, E) + 'static) -> Self {
         self.on(ev, handler);
         self
     }
@@ -348,18 +345,20 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
 /// Genericized updater which follows the master event order.
 ///
 /// Invoker should be a function which invokes the `update_n` function.
-/// The named signature of this is `Fn(item, aux, current_record, length) -> new_records`.
+/// The named signature of this is `FnMut(item, current_record, length) -> new_records`.
+// NOTE(zserik) `length` is the event count, right?
 ///
 /// A general implementation may look like this;
 /// ```ignore
-/// fn invoker(obj: &mut Object, aux: &mut Aux, node: NodeId, current_record: usize, length: usize) -> Vec<EventRecord> {
+/// let invoker = |obj: &mut Object, node: NodeId, current_record: usize, length: usize| -> Vec<EventRecord> {
 ///     obj.node.set_record(Some(current_record));
 ///     let mut graph = obj.graph.take();
-///     graph.update_node(obj, aux, node, length);
+///     // &mut aux comes from the environment of the closure
+///     graph.update_node(obj, &mut aux, node, length);
 ///     obj.node.reset(graph);
 ///     obj.node.set_record(None);
 ///     aux.master.record()
-/// }
+/// };
 /// ```
 ///
 /// Critical things that `invoker` must do;
@@ -382,11 +381,10 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
 /// Recorder should return the final record.
 ///
 /// Finalizer should update the final record.
-pub fn update<T, A: 'static>(
+pub fn update<T>(
     items: &mut [T],
-    aux: &mut A,
     mut rec: Vec<EventRecord>,
-    invoker: impl Fn(&mut T, &mut A, NodeId, usize, usize) -> Vec<EventRecord>,
+    mut invoker: impl FnMut(&mut T, NodeId, usize, usize) -> Vec<EventRecord>,
     indexer: impl Fn(&T) -> Vec<NodeId>,
     recorder: impl Fn(&T) -> usize,
     finalizer: impl Fn(&mut T, usize),
@@ -419,7 +417,7 @@ pub fn update<T, A: 'static>(
                     // reprocessing it would be a bug
                     continue;
                 }
-                let new_rec = invoker(&mut items[*idx], aux, rec[i].origin, i, 1);
+                let new_rec = invoker(&mut items[*idx], rec[i].origin, i, 1);
                 rec = new_rec;
                 emit_count = rec.len();
             }
@@ -556,10 +554,9 @@ mod tests {
 
         update(
             objs,
-            &mut master,
             record,
-            |obj: &mut &mut dyn ObjectNode, aux, node, current_rec, length| -> Vec<EventRecord> {
-                obj.update(aux, node, current_rec, length)
+            |obj: &mut &mut dyn ObjectNode, node, current_rec, length| -> Vec<EventRecord> {
+                obj.update(&mut master, node, current_rec, length)
             },
             |obj| obj.node_subjects(),
             |obj| obj.node_final(),
