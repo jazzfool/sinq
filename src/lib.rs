@@ -1,14 +1,16 @@
-#[cfg_attr(test, macro_use)]
-pub extern crate reclutch;
-
 use {
     reclutch::{event, prelude::*, verbgraph as graph},
     std::{borrow::Cow, collections::HashMap},
 };
 
+#[cfg(test)]
+mod tests;
+
+type HandlerMap<T, A, E> = HashMap<&'static str, Box<dyn FnMut(&mut T, &mut A, E) + 'static>>;
+
 /// Handles a queue, routing events into closures based on their key.
 pub struct QueueHandler<T, A: 'static, E: graph::Event> {
-    handlers: HashMap<&'static str, Box<dyn Fn(&mut T, &mut A, E)>>,
+    handlers: HandlerMap<T, A, E>,
     listener: event::RcEventListener<E>,
     node_id: NodeId,
 }
@@ -29,7 +31,7 @@ impl<T, A, E: graph::Event> QueueHandler<T, A, E> {
     pub fn on<'a>(
         &'a mut self,
         ev: &'static str,
-        handler: impl Fn(&mut T, &mut A, E) + 'static,
+        handler: impl FnMut(&mut T, &mut A, E) + 'static,
     ) -> &'a mut Self {
         self.handlers.insert(ev, Box::new(handler));
         self
@@ -40,50 +42,53 @@ impl<T, A, E: graph::Event> QueueHandler<T, A, E> {
     pub fn and_on(
         mut self,
         ev: &'static str,
-        handler: impl Fn(&mut T, &mut A, E) + 'static,
+        handler: impl FnMut(&mut T, &mut A, E) + 'static,
     ) -> Self {
         self.on(ev, handler);
         self
+    }
+
+    fn handle_events(
+        handlers: &mut HandlerMap<T, A, E>,
+        events: &[E],
+        obj: &mut T,
+        additional: &mut A,
+    ) {
+        for event in events {
+            if let Some(handler) = handlers.get_mut(event.get_key()) {
+                (*handler)(obj, additional, event.clone());
+            }
+        }
     }
 }
 
 impl<T, A, E: graph::Event> graph::DynQueueHandler<T, A> for QueueHandler<T, A, E> {
     fn update(&mut self, obj: &mut T, additional: &mut A) {
         let handlers = &mut self.handlers;
-        self.listener.with(|events| {
-            for event in events {
-                if let Some(handler) = handlers.get_mut(event.get_key()) {
-                    (*handler)(obj, additional, event.clone());
-                }
-            }
-        });
+        self.listener
+            .with(move |events| Self::handle_events(handlers, events, obj, additional));
     }
 
     fn update_n(&mut self, n: usize, obj: &mut T, additional: &mut A) {
         let handlers = &mut self.handlers;
-        self.listener.with_n(n, |events| {
-            for event in events {
-                if let Some(handler) = handlers.get_mut(event.get_key()) {
-                    (*handler)(obj, additional, event.clone());
-                }
-            }
+        self.listener.with_n(n, move |events| {
+            Self::handle_events(handlers, events, obj, additional)
         });
     }
 }
 
-/// A handler convertible to `Any`.
-pub trait AnyHandler<T, A>: graph::DynQueueHandler<T, A> {
+/// A handler convertible to [`Any`](std::any::Any).
+pub trait AnyQueueHandler<T, A>: graph::DynQueueHandler<T, A> + std::any::Any {
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
-impl<T: 'static, A: 'static, E: graph::Event + 'static> AnyHandler<T, A> for QueueHandler<T, A, E> {
-    #[inline]
+impl<X: graph::DynQueueHandler<T, A> + std::any::Any, T, A> AnyQueueHandler<T, A> for X {
+    #[inline(always)]
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
-
-    #[inline]
+    #[inline(always)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -91,7 +96,7 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> AnyHandler<T, A> for Que
 
 /// Stores a list of queue handlers tied to nodes.
 pub struct QueuedGraph<T: 'static, A: 'static> {
-    handlers: HashMap<NodeId, Box<dyn AnyHandler<T, A>>>,
+    handlers: HashMap<NodeId, Box<dyn AnyQueueHandler<T, A>>>,
 }
 
 impl<T: 'static, A: 'static> Default for QueuedGraph<T, A> {
@@ -104,8 +109,8 @@ impl<T: 'static, A: 'static> Default for QueuedGraph<T, A> {
 
 impl<T: 'static, A: 'static> QueuedGraph<T, A> {
     /// Creates a new, empty queued graph.
-    /// Synonymous to `Default::default()`.
-    #[inline]
+    /// Synonymous to [`Default::default()`].
+    #[inline(always)]
     pub fn new() -> Self {
         Default::default()
     }
@@ -121,7 +126,7 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
         self
     }
 
-    /// Same as [`add`](VerbGraph::add), however `self` is consumed and returned.
+    /// Same as [`add`](reclutch::verbgraph::VerbGraph::add), however `self` is consumed and returned.
     #[inline]
     pub fn and_add<E: graph::Event + 'static>(mut self, handler: QueueHandler<T, A, E>) -> Self {
         self.add(handler);
@@ -130,13 +135,13 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
 
     /// Returns an immutable reference to a queue handler for a specified node.
     #[inline]
-    pub fn get_handler(&self, node: NodeId) -> Option<&dyn AnyHandler<T, A>> {
+    pub fn get_handler(&self, node: NodeId) -> Option<&dyn AnyQueueHandler<T, A>> {
         Some(self.handlers.get(&node)?.as_ref())
     }
 
     /// Returns an mutable reference to a queue handler for a specified node.
     #[inline]
-    pub fn get_handler_mut(&mut self, node: NodeId) -> Option<&mut dyn AnyHandler<T, A>> {
+    pub fn get_handler_mut(&mut self, node: NodeId) -> Option<&mut dyn AnyQueueHandler<T, A>> {
         Some(self.handlers.get_mut(&node)?.as_mut())
     }
 
@@ -279,7 +284,7 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
         self.queue.emit(event)
     }
 
-    /// Helper function for `emit`.
+    /// Convenience wrapper around `emit`.
     /// Takes an owned event and emits it as a `Cow::Owned`.
     #[inline]
     pub fn emit_owned<'a>(
@@ -290,7 +295,7 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
         self.emit(Cow::Owned(event), mnr)
     }
 
-    /// Helper function for `emit`.
+    /// Convenience wrapper around `emit`.
     /// Takes a borrowed event and emits it as a `Cow::Borrowed`.
     #[inline]
     pub fn emit_borrowed<'a>(
@@ -329,7 +334,7 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
         self.current_record = record;
     }
 
-    /// Returns the latest final record.
+    /// Sets the latest final record.
     #[inline]
     pub fn set_final_record(&mut self, final_rec: usize) {
         self.final_record = final_rec;
@@ -348,18 +353,20 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
 /// Genericized updater which follows the master event order.
 ///
 /// Invoker should be a function which invokes the `update_n` function.
-/// The named signature of this is `Fn(item, aux, current_record, length) -> new_records`.
+/// The named signature of this is `FnMut(item, current_record, length) -> new_records`.
+// NOTE(zserik) `length` is the event count, right?
 ///
 /// A general implementation may look like this;
 /// ```ignore
-/// fn invoker(obj: &mut Object, aux: &mut Aux, node: NodeId, current_record: usize, length: usize) -> Vec<EventRecord> {
+/// let invoker = |obj: &mut Object, node: NodeId, current_record: usize, length: usize| -> Vec<EventRecord> {
 ///     obj.node.set_record(Some(current_record));
 ///     let mut graph = obj.graph.take();
-///     graph.update_node(obj, aux, node, length);
+///     // &mut aux comes from the environment of the closure
+///     graph.update_node(obj, &mut aux, node, length);
 ///     obj.node.reset(graph);
 ///     obj.node.set_record(None);
 ///     aux.master.record()
-/// }
+/// };
 /// ```
 ///
 /// Critical things that `invoker` must do;
@@ -382,11 +389,10 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
 /// Recorder should return the final record.
 ///
 /// Finalizer should update the final record.
-pub fn update<T, A: 'static>(
+pub fn update<T>(
     items: &mut [T],
-    aux: &mut A,
     mut rec: Vec<EventRecord>,
-    invoker: impl Fn(&mut T, &mut A, NodeId, usize, usize) -> Vec<EventRecord>,
+    mut invoker: impl FnMut(&mut T, NodeId, usize, usize) -> Vec<EventRecord>,
     indexer: impl Fn(&T) -> Vec<NodeId>,
     recorder: impl Fn(&T) -> usize,
     finalizer: impl Fn(&mut T, usize),
@@ -419,7 +425,7 @@ pub fn update<T, A: 'static>(
                     // reprocessing it would be a bug
                     continue;
                 }
-                let new_rec = invoker(&mut items[*idx], aux, rec[i].origin, i, 1);
+                let new_rec = invoker(&mut items[*idx], rec[i].origin, i, 1);
                 rec = new_rec;
                 emit_count = rec.len();
             }
@@ -429,143 +435,5 @@ pub fn update<T, A: 'static>(
 
     for item in items {
         finalizer(item, emit_count);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    trait ObjectNode {
-        fn node_subjects(&self) -> Vec<NodeId>;
-        fn update(
-            &mut self,
-            master: &mut MasterNodeRecord,
-            node: NodeId,
-            current_rec: usize,
-            length: usize,
-        ) -> Vec<EventRecord>;
-        fn node_final(&self) -> usize;
-        fn node_set_final(&mut self, fr: usize);
-    }
-
-    struct Object<E: graph::Event + 'static>(
-        EventNode<Self, MasterNodeRecord, E>,
-        Vec<&'static str>,
-    );
-
-    impl<E: graph::Event + 'static> Object<E> {
-        fn new(master: &mut MasterNodeRecord) -> Self {
-            Object(EventNode::new(master), Default::default())
-        }
-    }
-
-    impl<E: graph::Event + 'static> ObjectNode for Object<E> {
-        #[inline]
-        fn node_subjects(&self) -> Vec<NodeId> {
-            self.0.subjects()
-        }
-
-        fn update(
-            &mut self,
-            master: &mut MasterNodeRecord,
-            node: NodeId,
-            current_rec: usize,
-            length: usize,
-        ) -> Vec<EventRecord> {
-            self.0.set_record(Some(current_rec));
-            let mut graph = self.0.take();
-            graph.update_node(self, master, node, length);
-            self.0.reset(graph);
-            self.0.set_record(None);
-            master.record().to_vec()
-        }
-
-        fn node_final(&self) -> usize {
-            self.0.final_record()
-        }
-
-        fn node_set_final(&mut self, fr: usize) {
-            self.0.set_final_record(fr);
-        }
-    }
-
-    #[derive(Clone, Event)]
-    enum EventA {
-        #[event_key(aa)]
-        A,
-        #[event_key(ab)]
-        B,
-    }
-
-    #[derive(Clone, Event)]
-    #[event_key(b)]
-    struct EventB;
-
-    #[derive(Clone, Event)]
-    #[event_key(none)]
-    struct NoEvent;
-
-    #[test]
-    fn test_master_record() {
-        let mut master = MasterNodeRecord::new();
-
-        let mut obj_0 = Object::<EventA>::new(&mut master);
-        let mut obj_1 = Object::<NoEvent>::new(&mut master);
-        let mut obj_2 = Object::<EventB>::new(&mut master);
-        let mut obj_3 = Object::<EventB>::new(&mut master);
-
-        obj_2.0.add(QueueHandler::new(&obj_0.0).and_on(
-            "aa",
-            |o: &mut Object<EventB>, mnr: &mut MasterNodeRecord, _| {
-                o.0.emit_owned(EventB, mnr);
-            },
-        ));
-
-        obj_3.0.add(
-            QueueHandler::new(&obj_0.0).and_on("ab", |o: &mut Object<EventB>, mnr, _| {
-                o.0.emit_owned(EventB, mnr);
-            }),
-        );
-
-        obj_1.0.add(
-            QueueHandler::new(&obj_2.0).and_on("b", |o: &mut Object<NoEvent>, _, _| {
-                o.1.push("obj_2");
-            }),
-        );
-
-        obj_1.0.add(
-            QueueHandler::new(&obj_3.0).and_on("b", |o: &mut Object<NoEvent>, _, _| {
-                o.1.push("obj_3");
-            }),
-        );
-
-        // the order of events emitted should be the only deciding factor of the final order of events received by obj_1.
-        obj_0.0.emit_owned(EventA::B, &mut master);
-        obj_0.0.emit_owned(EventA::A, &mut master);
-        obj_0.0.emit_owned(EventA::A, &mut master);
-        obj_0.0.emit_owned(EventA::B, &mut master);
-        obj_0.0.emit_owned(EventA::A, &mut master);
-
-        // object list put in "worst-case" order.
-        // obj_1 should be checked after obj_2 and obj_3.
-        // obj_3 should be checked before obj_2.
-        // if implemented correctly, none of this will matter, it'll sort it correctly.
-        let objs: &mut [&mut dyn ObjectNode] = &mut [&mut obj_1, &mut obj_2, &mut obj_3];
-        let record = master.record().to_vec();
-
-        update(
-            objs,
-            &mut master,
-            record,
-            |obj: &mut &mut dyn ObjectNode, aux, node, current_rec, length| -> Vec<EventRecord> {
-                obj.update(aux, node, current_rec, length)
-            },
-            |obj| obj.node_subjects(),
-            |obj| obj.node_final(),
-            |obj, fr| obj.node_set_final(fr),
-        );
-
-        assert_eq!(&obj_1.1, &["obj_3", "obj_2", "obj_2", "obj_3", "obj_2"]);
     }
 }
