@@ -6,13 +6,12 @@ use {
 #[cfg(test)]
 mod tests;
 
-type HandlerMap<T, A, E> =
-    HashMap<&'static str, Box<dyn FnMut(&mut T, &mut A, E) + Send + Sync + 'static>>;
+type HandlerMap<T, A, E> = HashMap<&'static str, Box<dyn FnMut(&mut T, &mut A, E) + 'static>>;
 
 /// Handles a queue, routing events into closures based on their key.
 pub struct QueueHandler<T, A: 'static, E: graph::Event> {
     handlers: HandlerMap<T, A, E>,
-    listener: event::ts::Listener<E>,
+    listener: event::RcEventListener<E>,
     node_id: NodeId,
 }
 
@@ -32,7 +31,7 @@ impl<T, A, E: graph::Event> QueueHandler<T, A, E> {
     pub fn on<'a>(
         &'a mut self,
         ev: &'static str,
-        handler: impl FnMut(&mut T, &mut A, E) + Send + Sync + 'static,
+        handler: impl FnMut(&mut T, &mut A, E) + 'static,
     ) -> &'a mut Self {
         self.handlers.insert(ev, Box::new(handler));
         self
@@ -43,7 +42,7 @@ impl<T, A, E: graph::Event> QueueHandler<T, A, E> {
     pub fn and_on(
         mut self,
         ev: &'static str,
-        handler: impl FnMut(&mut T, &mut A, E) + Send + Sync + 'static,
+        handler: impl FnMut(&mut T, &mut A, E) + 'static,
     ) -> Self {
         self.on(ev, handler);
         self
@@ -79,16 +78,12 @@ impl<T, A, E: graph::Event> graph::DynQueueHandler<T, A> for QueueHandler<T, A, 
 }
 
 /// A handler convertible to [`Any`](std::any::Any).
-pub trait AnyQueueHandler<T, A>:
-    graph::DynQueueHandler<T, A> + std::any::Any + Send + Sync
-{
+pub trait AnyQueueHandler<T, A>: graph::DynQueueHandler<T, A> + std::any::Any {
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
-impl<X: graph::DynQueueHandler<T, A> + std::any::Any + Send + Sync, T, A> AnyQueueHandler<T, A>
-    for X
-{
+impl<X: graph::DynQueueHandler<T, A> + std::any::Any, T, A> AnyQueueHandler<T, A> for X {
     #[inline(always)]
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -123,7 +118,7 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
     /// Adds a queue handler.
     ///
     /// If the handler handles a node that has already been handled, the old handler will be replaced.
-    pub fn add<'a, E: graph::Event + Send + Sync + 'static>(
+    pub fn add<'a, E: graph::Event + 'static>(
         &'a mut self,
         handler: QueueHandler<T, A, E>,
     ) -> &'a mut Self {
@@ -133,10 +128,7 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
 
     /// Same as [`add`](reclutch::verbgraph::VerbGraph::add), however `self` is consumed and returned.
     #[inline]
-    pub fn and_add<E: graph::Event + Send + Sync + 'static>(
-        mut self,
-        handler: QueueHandler<T, A, E>,
-    ) -> Self {
+    pub fn and_add<E: graph::Event + 'static>(mut self, handler: QueueHandler<T, A, E>) -> Self {
         self.add(handler);
         self
     }
@@ -215,7 +207,7 @@ impl MasterNodeRecord {
 /// Each instance is implicitly tied to a `MasterNodeRecord`.
 pub struct EventNode<T: 'static, A: 'static, E: graph::Event + 'static> {
     graph: Option<QueuedGraph<T, A>>,
-    queue: event::ts::Queue<E>,
+    queue: event::RcEventQueue<E>,
     id: NodeId,
     current_record: Option<usize>,
     final_record: usize,
@@ -265,10 +257,10 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> QueueInterfaceCommon
 impl<T: 'static, A: 'static, E: graph::Event + Clone + 'static> QueueInterfaceListable
     for EventNode<T, A, E>
 {
-    type Listener = event::ts::Listener<E>;
+    type Listener = event::RcEventListener<E>;
 
     #[inline]
-    fn listen(&self) -> event::ts::Listener<E> {
+    fn listen(&self) -> event::RcEventListener<E> {
         self.queue.listen()
     }
 }

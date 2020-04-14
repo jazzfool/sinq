@@ -3,7 +3,7 @@ use {
     reclutch::{verbgraph as graph, Event},
 };
 
-trait ObjectNode: Send + Sync {
+trait ObjectNode {
     fn node_subjects(&self) -> Vec<NodeId>;
     fn update(
         &mut self,
@@ -16,18 +16,15 @@ trait ObjectNode: Send + Sync {
     fn node_set_final(&mut self, fr: usize);
 }
 
-struct Object<E: graph::Event + Send + Sync + 'static>(
-    EventNode<Self, MasterNodeRecord, E>,
-    Vec<&'static str>,
-);
+struct Object<E: graph::Event + 'static>(EventNode<Self, MasterNodeRecord, E>, Vec<&'static str>);
 
-impl<E: graph::Event + Send + Sync + 'static> Object<E> {
+impl<E: graph::Event + 'static> Object<E> {
     fn new(master: &mut MasterNodeRecord) -> Self {
         Object(EventNode::new(master), Default::default())
     }
 }
 
-impl<E: graph::Event + Send + Sync + 'static> ObjectNode for Object<E> {
+impl<E: graph::Event + 'static> ObjectNode for Object<E> {
     #[inline]
     fn node_subjects(&self) -> Vec<NodeId> {
         self.0.subjects()
