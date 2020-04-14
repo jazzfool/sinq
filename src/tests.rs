@@ -3,28 +3,31 @@ use {
     reclutch::{verbgraph as graph, Event},
 };
 
-trait ObjectNode {
+trait ObjectNode: Send + Sync {
     fn node_subjects(&self) -> Vec<NodeId>;
     fn update(
         &mut self,
         master: &mut MasterNodeRecord,
         node: NodeId,
         current_rec: usize,
-        length: usize,
-    ) -> Vec<EventRecord>;
+        rec_length: usize,
+    ) -> Option<Vec<EventRecord>>;
     fn node_final(&self) -> usize;
     fn node_set_final(&mut self, fr: usize);
 }
 
-struct Object<E: graph::Event + 'static>(EventNode<Self, MasterNodeRecord, E>, Vec<&'static str>);
+struct Object<E: graph::Event + Send + Sync + 'static>(
+    EventNode<Self, MasterNodeRecord, E>,
+    Vec<&'static str>,
+);
 
-impl<E: graph::Event + 'static> Object<E> {
+impl<E: graph::Event + Send + Sync + 'static> Object<E> {
     fn new(master: &mut MasterNodeRecord) -> Self {
         Object(EventNode::new(master), Default::default())
     }
 }
 
-impl<E: graph::Event + 'static> ObjectNode for Object<E> {
+impl<E: graph::Event + Send + Sync + 'static> ObjectNode for Object<E> {
     #[inline]
     fn node_subjects(&self) -> Vec<NodeId> {
         self.0.subjects()
@@ -35,14 +38,18 @@ impl<E: graph::Event + 'static> ObjectNode for Object<E> {
         master: &mut MasterNodeRecord,
         node: NodeId,
         current_rec: usize,
-        length: usize,
-    ) -> Vec<EventRecord> {
+        rec_length: usize,
+    ) -> Option<Vec<EventRecord>> {
         self.0.set_record(Some(current_rec));
         let mut graph = self.0.take();
-        graph.update_node(self, master, node, length);
+        graph.update_node(self, master, node, 1);
         self.0.reset(graph);
         self.0.set_record(None);
-        master.record().to_vec()
+        if rec_length != master.record().len() {
+            Some(master.record().to_vec())
+        } else {
+            None
+        }
     }
 
     fn node_final(&self) -> usize {
@@ -121,7 +128,7 @@ fn test_master_record() {
     update(
         objs,
         record,
-        |obj: &mut &mut dyn ObjectNode, node, current_rec, length| -> Vec<EventRecord> {
+        |obj: &mut &mut dyn ObjectNode, node, current_rec, length| -> Option<Vec<EventRecord>> {
             obj.update(&mut master, node, current_rec, length)
         },
         |obj| obj.node_subjects(),

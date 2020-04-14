@@ -6,12 +6,13 @@ use {
 #[cfg(test)]
 mod tests;
 
-type HandlerMap<T, A, E> = HashMap<&'static str, Box<dyn FnMut(&mut T, &mut A, E) + 'static>>;
+type HandlerMap<T, A, E> =
+    HashMap<&'static str, Box<dyn FnMut(&mut T, &mut A, E) + Send + Sync + 'static>>;
 
 /// Handles a queue, routing events into closures based on their key.
 pub struct QueueHandler<T, A: 'static, E: graph::Event> {
     handlers: HandlerMap<T, A, E>,
-    listener: event::RcEventListener<E>,
+    listener: event::ts::Listener<E>,
     node_id: NodeId,
 }
 
@@ -31,7 +32,7 @@ impl<T, A, E: graph::Event> QueueHandler<T, A, E> {
     pub fn on<'a>(
         &'a mut self,
         ev: &'static str,
-        handler: impl FnMut(&mut T, &mut A, E) + 'static,
+        handler: impl FnMut(&mut T, &mut A, E) + Send + Sync + 'static,
     ) -> &'a mut Self {
         self.handlers.insert(ev, Box::new(handler));
         self
@@ -42,7 +43,7 @@ impl<T, A, E: graph::Event> QueueHandler<T, A, E> {
     pub fn and_on(
         mut self,
         ev: &'static str,
-        handler: impl FnMut(&mut T, &mut A, E) + 'static,
+        handler: impl FnMut(&mut T, &mut A, E) + Send + Sync + 'static,
     ) -> Self {
         self.on(ev, handler);
         self
@@ -78,12 +79,16 @@ impl<T, A, E: graph::Event> graph::DynQueueHandler<T, A> for QueueHandler<T, A, 
 }
 
 /// A handler convertible to [`Any`](std::any::Any).
-pub trait AnyQueueHandler<T, A>: graph::DynQueueHandler<T, A> + std::any::Any {
+pub trait AnyQueueHandler<T, A>:
+    graph::DynQueueHandler<T, A> + std::any::Any + Send + Sync
+{
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
-impl<X: graph::DynQueueHandler<T, A> + std::any::Any, T, A> AnyQueueHandler<T, A> for X {
+impl<X: graph::DynQueueHandler<T, A> + std::any::Any + Send + Sync, T, A> AnyQueueHandler<T, A>
+    for X
+{
     #[inline(always)]
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -118,7 +123,7 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
     /// Adds a queue handler.
     ///
     /// If the handler handles a node that has already been handled, the old handler will be replaced.
-    pub fn add<'a, E: graph::Event + 'static>(
+    pub fn add<'a, E: graph::Event + Send + Sync + 'static>(
         &'a mut self,
         handler: QueueHandler<T, A, E>,
     ) -> &'a mut Self {
@@ -128,7 +133,10 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
 
     /// Same as [`add`](reclutch::verbgraph::VerbGraph::add), however `self` is consumed and returned.
     #[inline]
-    pub fn and_add<E: graph::Event + 'static>(mut self, handler: QueueHandler<T, A, E>) -> Self {
+    pub fn and_add<E: graph::Event + Send + Sync + 'static>(
+        mut self,
+        handler: QueueHandler<T, A, E>,
+    ) -> Self {
         self.add(handler);
         self
     }
@@ -207,7 +215,7 @@ impl MasterNodeRecord {
 /// Each instance is implicitly tied to a `MasterNodeRecord`.
 pub struct EventNode<T: 'static, A: 'static, E: graph::Event + 'static> {
     graph: Option<QueuedGraph<T, A>>,
-    queue: event::RcEventQueue<E>,
+    queue: event::ts::Queue<E>,
     id: NodeId,
     current_record: Option<usize>,
     final_record: usize,
@@ -257,10 +265,10 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> QueueInterfaceCommon
 impl<T: 'static, A: 'static, E: graph::Event + Clone + 'static> QueueInterfaceListable
     for EventNode<T, A, E>
 {
-    type Listener = event::RcEventListener<E>;
+    type Listener = event::ts::Listener<E>;
 
     #[inline]
-    fn listen(&self) -> event::RcEventListener<E> {
+    fn listen(&self) -> event::ts::Listener<E> {
         self.queue.listen()
     }
 }
@@ -353,28 +361,32 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
 /// Genericized updater which follows the master event order.
 ///
 /// Invoker should be a function which invokes the `update_n` function.
-/// The named signature of this is `FnMut(item, current_record, length) -> new_records`.
+/// The named signature of this is `FnMut(item, current_record, length) -> possible_new_records`.
 // NOTE(zserik) `length` is the event count, right?
 ///
 /// A general implementation may look like this;
 /// ```ignore
-/// let invoker = |obj: &mut Object, node: NodeId, current_record: usize, length: usize| -> Vec<EventRecord> {
+/// let invoker = |obj: &mut Object, node: NodeId, current_record: usize, rec_length: usize| -> Option<Vec<EventRecord>> {
 ///     obj.node.set_record(Some(current_record));
 ///     let mut graph = obj.graph.take();
 ///     // &mut aux comes from the environment of the closure
-///     graph.update_node(obj, &mut aux, node, length);
+///     graph.update_node(obj, &mut aux, node, 1);
 ///     obj.node.reset(graph);
 ///     obj.node.set_record(None);
-///     aux.master.record()
+///     if rec_length != aux.master.record().len() {
+///         Some(aux.master.record().to_vec())
+///     } else {
+///         None
+///     }
 /// };
 /// ```
 ///
 /// Critical things that `invoker` must do;
 /// - Update `current_record` of graph.
 /// - Correctly `take` and `reset` inner `VerbGraph` of graph in order to call `update_n`.
-/// - Invoke `update_n` on graph, using `length`.
+/// - Invoke `update_n` on graph, using 1 for length (process a single event).
 /// - Reset `current_record` after `update_n`.
-/// - Return new records.
+/// - Return new records if and only if `rec_length` doesn't match `MasterNodeRecord::record().len()`.
 ///
 /// Indexer should be a function which returns all the graphs that a given `T` is listening to.
 /// The implementation should invariably lead to an invocation to `QueuedGraph::subjects`.
@@ -392,7 +404,7 @@ impl<T: 'static, A: 'static, E: graph::Event + 'static> EventNode<T, A, E> {
 pub fn update<T>(
     items: &mut [T],
     mut rec: Vec<EventRecord>,
-    mut invoker: impl FnMut(&mut T, NodeId, usize, usize) -> Vec<EventRecord>,
+    mut invoker: impl FnMut(&mut T, NodeId, usize, usize) -> Option<Vec<EventRecord>>,
     indexer: impl Fn(&T) -> Vec<NodeId>,
     recorder: impl Fn(&T) -> usize,
     finalizer: impl Fn(&mut T, usize),
@@ -425,8 +437,10 @@ pub fn update<T>(
                     // reprocessing it would be a bug
                     continue;
                 }
-                let new_rec = invoker(&mut items[*idx], rec[i].origin, i, 1);
-                rec = new_rec;
+                let new_rec = invoker(&mut items[*idx], rec[i].origin, i, emit_count);
+                if let Some(new_rec) = new_rec {
+                    rec = new_rec;
+                }
                 emit_count = rec.len();
             }
         }
