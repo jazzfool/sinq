@@ -62,7 +62,11 @@ impl<T, A, E: graph::Event> QueueHandler<T, A, E> {
     }
 }
 
-impl<T, A, E: graph::Event> graph::DynQueueHandler<T, A> for QueueHandler<T, A, E> {
+impl<T, A, E> graph::DynQueueHandler<T, A> for QueueHandler<T, A, E>
+where
+    T: 'static,
+    E: graph::Event + 'static,
+{
     fn update(&mut self, obj: &mut T, additional: &mut A) {
         let handlers = &mut self.handlers;
         self.listener
@@ -77,26 +81,9 @@ impl<T, A, E: graph::Event> graph::DynQueueHandler<T, A> for QueueHandler<T, A, 
     }
 }
 
-/// A handler convertible to [`Any`](std::any::Any).
-pub trait AnyQueueHandler<T, A>: graph::DynQueueHandler<T, A> + std::any::Any {
-    fn as_any(&self) -> &dyn std::any::Any;
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
-}
-
-impl<X: graph::DynQueueHandler<T, A> + std::any::Any, T, A> AnyQueueHandler<T, A> for X {
-    #[inline(always)]
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    #[inline(always)]
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-}
-
 /// Stores a list of queue handlers tied to nodes.
 pub struct QueuedGraph<T: 'static, A: 'static> {
-    handlers: HashMap<NodeId, Box<dyn AnyQueueHandler<T, A>>>,
+    handlers: HashMap<NodeId, Box<dyn graph::DynQueueHandler<T, A>>>,
 }
 
 impl<T: 'static, A: 'static> Default for QueuedGraph<T, A> {
@@ -135,13 +122,13 @@ impl<T: 'static, A: 'static> QueuedGraph<T, A> {
 
     /// Returns an immutable reference to a queue handler for a specified node.
     #[inline]
-    pub fn get_handler(&self, node: NodeId) -> Option<&dyn AnyQueueHandler<T, A>> {
+    pub fn get_handler(&self, node: NodeId) -> Option<&dyn graph::DynQueueHandler<T, A>> {
         Some(self.handlers.get(&node)?.as_ref())
     }
 
     /// Returns an mutable reference to a queue handler for a specified node.
     #[inline]
-    pub fn get_handler_mut(&mut self, node: NodeId) -> Option<&mut dyn AnyQueueHandler<T, A>> {
+    pub fn get_handler_mut(&mut self, node: NodeId) -> Option<&mut dyn graph::DynQueueHandler<T, A>> {
         Some(self.handlers.get_mut(&node)?.as_mut())
     }
 
